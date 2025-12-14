@@ -68,7 +68,7 @@ export default async (req) => {
 
   try {
     // 모델명 수정됨 (1.5-flash)
-    const model = "models/gemini-1.5-flash";
+    const model = "models/gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`;
 
     const res = await fetch(endpoint, {
