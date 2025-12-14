@@ -20,6 +20,8 @@ let mode = null; // "movie" | "book"
 
 function setMode(next) {
   mode = next;
+  document.body.classList.add("is-active"); // 추가
+
   form.classList.remove("hidden");
   resultCard.classList.add("hidden");
   resultsEl.innerHTML = "";
@@ -33,6 +35,7 @@ btnBook.addEventListener("click", () => setMode("book"));
 
 btnReset.addEventListener("click", () => {
   mode = null;
+  document.body.classList.remove("is-active"); // 추가
   form.classList.add("hidden");
   resultCard.classList.add("hidden");
   resultsEl.innerHTML = "";
