@@ -79,7 +79,7 @@ export default async (req) => {
     // Gemini REST 호출 (Generative Language API)
     // 모델명은 필요에 따라 변경 가능: gemini-1.5-flash, gemini-1.5-pro 등
     const endpoint =
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
     const geminiRes = await fetch(endpoint, {
       method: "POST",
