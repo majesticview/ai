@@ -1,0 +1,138 @@
+const el = (id) => document.getElementById(id);
+
+const btnMovie = el("btnMovie");
+const btnBook = el("btnBook");
+const form = el("form");
+const modePill = el("modePill");
+const statusEl = el("status");
+
+const topicEl = el("topic");
+const historyEl = el("history");
+const situationEl = el("situation");
+
+const btnReset = el("btnReset");
+const btnRetry = el("btnRetry");
+
+const resultCard = el("resultCard");
+const resultsEl = el("results");
+
+let mode = null; // "movie" | "book"
+
+function setMode(next) {
+  mode = next;
+  form.classList.remove("hidden");
+  resultCard.classList.add("hidden");
+  resultsEl.innerHTML = "";
+
+  modePill.textContent = `선택됨: ${mode === "movie" ? "영화" : "도서"}`;
+  statusEl.textContent = "";
+}
+
+btnMovie.addEventListener("click", () => setMode("movie"));
+btnBook.addEventListener("click", () => setMode("book"));
+
+btnReset.addEventListener("click", () => {
+  mode = null;
+  form.classList.add("hidden");
+  resultCard.classList.add("hidden");
+  resultsEl.innerHTML = "";
+  statusEl.textContent = "";
+  topicEl.value = "";
+  historyEl.value = "";
+  situationEl.value = "";
+});
+
+btnRetry.addEventListener("click", async () => {
+  // 입력 유지한 채 다시 요청
+  if (!mode) return;
+  await requestRecommendations();
+});
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  await requestRecommendations();
+});
+
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderResults(payload) {
+  const items = payload?.items ?? [];
+  if (!Array.isArray(items) || items.length === 0) {
+    resultsEl.innerHTML = `<div class="item">추천 결과가 비어 있습니다. 다른 키워드로 다시 시도해보세요.</div>`;
+    return;
+  }
+
+  resultsEl.innerHTML = items.map((it, idx) => {
+    const title = escapeHtml(it.title ?? `추천 ${idx + 1}`);
+    const creator = escapeHtml(it.creator ?? "");
+    const year = escapeHtml(it.year ?? "");
+    const reason = escapeHtml(it.reason ?? "");
+    const linkLabel = mode === "movie" ? "유튜브에서 예고편 검색" : "온라인 서점에서 검색";
+
+    const externalUrl = it.externalUrl ? escapeHtml(it.externalUrl) : "";
+    const detailUrl = it.detailUrl ? escapeHtml(it.detailUrl) : "";
+
+    return `
+      <article class="item">
+        <div class="itemTop">
+          <h3 class="title">${title}</h3>
+          <div class="meta">${creator}${creator && year ? " · " : ""}${year}</div>
+        </div>
+        <p class="desc">${reason}</p>
+        <div class="links">
+          ${externalUrl ? `<a class="link" href="${externalUrl}" target="_blank" rel="noopener noreferrer">${linkLabel}</a>` : ""}
+          ${detailUrl ? `<a class="link" href="${detailUrl}" target="_blank" rel="noopener noreferrer">상세 정보</a>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  resultCard.classList.remove("hidden");
+}
+
+async function requestRecommendations() {
+  if (!mode) {
+    statusEl.textContent = "먼저 영화/도서 중 하나를 선택해주세요.";
+    return;
+  }
+
+  const topic = topicEl.value.trim();
+  const history = historyEl.value.trim();
+  const situation = situationEl.value.trim();
+
+  if (!topic && !history) {
+    statusEl.textContent = "최소한 '주제/분위기' 또는 '이전에 재미있게 본 작품' 중 하나는 입력해주세요.";
+    return;
+  }
+
+  statusEl.textContent = "추천 생성 중...";
+  resultsEl.innerHTML = "";
+  resultCard.classList.add("hidden");
+
+  try {
+    const res = await fetch("/.netlify/functions/recommend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, topic, history, situation })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`서버 오류(${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    renderResults(data);
+    statusEl.textContent = "완료!";
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = `오류: ${err.message}`;
+  }
+}

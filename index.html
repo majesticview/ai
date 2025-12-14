@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>콘텐츠 추천 (영화/도서)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="header">
+      <h1>AI 콘텐츠 추천</h1>
+      <p class="sub">영화 또는 도서를 골라 2~3개 추천을 받아보세요.</p>
+    </header>
+
+    <section class="card">
+      <div class="mode">
+        <button id="btnMovie" class="btn btn-primary" type="button">영화 추천 받으러 가기</button>
+        <button id="btnBook" class="btn btn-secondary" type="button">도서 추천 받으러 가기</button>
+      </div>
+
+      <form id="form" class="form hidden">
+        <div class="pill" id="modePill">선택됨: -</div>
+
+        <label class="field">
+          <span class="label">원하는 주제/분위기</span>
+          <input id="topic" type="text" placeholder="예: 힐링, 반전 있는 스릴러, 성장서사, 자기계발" />
+        </label>
+
+        <label class="field">
+          <span class="label">이전에 재미있게 본 영화/도서</span>
+          <input id="history" type="text" placeholder="예: 인터스텔라, 해리포터, 데미안..." />
+        </label>
+
+        <label class="field">
+          <span class="label">상황/조건 (선택)</span>
+          <textarea id="situation" rows="3" placeholder="예: 혼자 자기 전, 출퇴근 길, 가족과 같이, 2시간 이내..."></textarea>
+        </label>
+
+        <div class="actions">
+          <button id="btnSubmit" class="btn btn-primary" type="submit">AI에게 추천 요청하기</button>
+          <button id="btnReset" class="btn btn-ghost" type="button">다시 선택</button>
+        </div>
+
+        <div id="status" class="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section class="card hidden" id="resultCard">
+      <div class="resultHeader">
+        <h2>추천 목록</h2>
+        <button id="btnRetry" class="btn btn-secondary" type="button">다시 추천받기</button>
+      </div>
+      <div id="results" class="results"></div>
+    </section>
+
+    <footer class="footer">
+      <small>Netlify 배포 + Netlify Functions + Gemini API</small>
+    </footer>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
