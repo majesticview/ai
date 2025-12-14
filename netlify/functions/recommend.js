@@ -34,11 +34,32 @@ export default async (req) => {
     return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   };
 
-  const creatorLabel = mode === "movie" ? "감독" : "저자";
   const watchedLabel = mode === "movie" ? "이전에 봤던 영화" : "이전에 읽었던 책";
+  const creatorLabel = mode === "movie" ? "감독" : "저자";
 
-  // ===== 1) Gemini 호출 유틸 (프롬프트를 인자로 받게) =====
-  const callGemini = async (prompt, temperature = 0.4, maxOutputTokens = 700) => {
+  // 제목만 3줄로 받기(설명/번호/코드블록 금지)
+  const prompt = `
+너는 ${mode === "movie" ? "영화" : "도서"} 추천 큐레이터다.
+
+[사용자 입력]
+- 장르/분위기: ${moodGenre || "(미입력)"}
+- 주제: ${theme || "(미입력)"}
+- ${watchedLabel}(선택): ${watched || "(미입력)"}
+- ${creatorLabel}(선택): ${creatorName || "(미입력)"}
+- 자유 조건: ${constraints || "(미입력)"}
+
+[중요 규칙]
+- ${mode === "movie" ? "영화 제목만" : "도서 제목만"} 추천해라.
+- 반드시 3개.
+- 각 추천은 반드시 한 줄.
+- 번호/불릿/따옴표/부가설명/코드블록 금지. 제목만 출력.
+- ${watchedLabel}가 있으면 그 작품과 결이 비슷한 작품으로 추천해라(무관한 추천 금지).
+- ${creatorLabel}가 있으면 가능하면 그 ${creatorLabel}의 작품(또는 유사한 결)을 우선해라.
+
+이제 제목만 3줄로 출력해.
+`.trim();
+
+  const callGemini = async (temperature = 0.5) => {
     const model = "models/gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`;
 
@@ -47,7 +68,7 @@ export default async (req) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature, maxOutputTokens },
+        generationConfig: { temperature, maxOutputTokens: 250 },
       }),
     });
 
@@ -66,9 +87,43 @@ export default async (req) => {
     return text;
   };
 
-  // ===== 2) 입력 기반 fallback (연관성 유지) =====
+  const parseTitles = (text) => {
+    const cleaned = String(text || "")
+      .replace(/^```[\s\S]*?\n/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    const lines = cleaned
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => l.replace(/^\s*(?:\d+[\.\)]\s*|[-•]\s*)/, "").trim())
+      .map((l) => l.replace(/^["“”']|["“”']$/g, "").trim()) // 혹시 따옴표가 붙으면 제거
+      .filter(Boolean);
+
+    // 너무 길게(설명 포함) 오면 제목만 대충 앞부분으로 자르기(최후의 안전장치)
+    const normalized = lines.map((l) => {
+      // "제목 - 설명..." 같은 경우 " - " 앞까지만
+      if (l.includes(" - ")) return l.split(" - ")[0].trim();
+      if (l.includes(" — ")) return l.split(" — ")[0].trim();
+      return l;
+    });
+
+    // 중복 제거 + 3개로 제한
+    const seen = new Set();
+    const titles = [];
+    for (const t of normalized) {
+      const key = t.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      titles.push(t);
+      if (titles.length >= 3) break;
+    }
+    return titles;
+  };
+
   const fallbackItems = () => {
-    const seed = [watched, creatorName, moodGenre, theme, constraints].filter(Boolean).join(" ").trim();
+    const seed = [watched, creatorName, moodGenre, theme].filter(Boolean).join(" ").trim();
     const baseReason = seed
       ? `AI 응답이 불안정하여 입력("${seed}") 기반 검색용 대체 추천입니다.`
       : `입력 정보가 부족해 기본 추천입니다.`;
@@ -83,172 +138,54 @@ export default async (req) => {
       ? ["인셉션", "리틀 포레스트", "기생충"]
       : ["아몬드", "데미안", "미움받을 용기"];
 
-    return titles.slice(0, 3).map((t) => ({
-      title: t,
-      creator: "",
-      year: "",
-      reason: baseReason,
-      externalUrl: makeExternalUrl(t),
-      detailUrl: makeDetailUrl(t),
-    }));
-  };
-
-  // ===== 3) 관대한 파서: 탭 우선, 그 외 형식도 최대한 흡수 =====
-  const parseList = (text) => {
-    const cleaned = String(text || "")
-      .replace(/^```[\s\S]*?\n/i, "")
-      .replace(/```$/i, "")
-      .trim();
-
-    const lines = cleaned
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, 20);
-
-    const items = [];
-
-    for (const raw0 of lines) {
-      if (items.length >= 3) break;
-
-      // 번호/불릿 제거
-      const raw = raw0.replace(/^\s*(?:\d+[\.\)]\s*|[-•]\s*)/, "").trim();
-      if (!raw) continue;
-
-      let title = "";
-      let creator = "";
-      let year = "";
-      let reason = "";
-
-      // (1) 탭 포맷: 제목\t창작자\t연도\t이유
-      if (raw.includes("\t")) {
-        const cols = raw.split("\t").map((x) => x.trim());
-        title = (cols[0] ?? "").trim();
-        creator = (cols[1] ?? "").trim();
-        year = (cols[2] ?? "").trim();
-        reason = (cols[3] ?? "").trim();
-      } else {
-        // (2) 파이프 포맷: 제목 | creator= | year= | reason=
-        if (raw.includes("|")) {
-          const parts = raw.split("|").map((p) => p.trim()).filter(Boolean);
-          title = (parts[0] ?? "").trim();
-          for (let i = 1; i < parts.length; i++) {
-            const p = parts[i];
-            const lower = p.toLowerCase();
-            if (lower.startsWith("creator=")) creator = p.slice("creator=".length).trim();
-            else if (lower.startsWith("director=")) creator = p.slice("director=".length).trim();
-            else if (lower.startsWith("author=")) creator = p.slice("author=".length).trim();
-            else if (lower.startsWith("year=")) year = p.slice("year=".length).trim();
-            else if (lower.startsWith("reason=")) reason = p.slice("reason=".length).trim();
-          }
-        } else {
-          // (3) "제목 — 창작자" / "제목 - 창작자" / "제목: 창작자"
-          const sep =
-            raw.includes("—") ? "—" :
-            raw.includes(" - ") ? " - " :
-            raw.includes(":") ? ":" :
-            null;
-
-          if (sep) {
-            const p = raw.split(sep);
-            title = (p[0] ?? "").trim();
-            creator = p.slice(1).join(sep).trim();
-          } else {
-            title = raw.trim();
-          }
-
-          // (4) "제목 (감독: XXX)" / "제목 (저자: XXX)" 보정
-          const m = raw.match(/^(.*?)\s*\((?:감독|저자|작가|author|director)\s*:\s*(.*?)\)\s*$/i);
-          if (m) {
-            title = (m[1] ?? "").trim();
-            creator = (m[2] ?? "").trim();
-          }
-        }
-      }
-
-      // year 정규화 (있으면 4자리만 인정)
-      if (year && !/^\d{4}$/.test(year)) year = "";
-
-      if (!title) continue;
-      if (!reason) reason = "입력하신 조건과 취향을 반영한 추천입니다.";
-
-      const q = [title, creator].filter(Boolean).join(" ").trim();
-
-      items.push({
+    return titles.slice(0, 3).map((title) => {
+      // 검색 정확도: 사용자가 입력한 감독/저자가 있으면 검색어에 섞음
+      const q = [title, creatorName].filter(Boolean).join(" ").trim();
+      return {
         title,
-        creator,
-        year,
-        reason,
+        creator: "",
+        year: "",
+        reason: baseReason,
         externalUrl: makeExternalUrl(q || title),
-        detailUrl: makeDetailUrl([title, creator, year].filter(Boolean).join(" ")),
-      });
-    }
-
-    // 중복 제거
-    const seen = new Set();
-    const uniq = [];
-    for (const it of items) {
-      const key = (it.title || "").toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      uniq.push(it);
-      if (uniq.length >= 3) break;
-    }
-
-    return uniq;
+        detailUrl: makeDetailUrl(q || title),
+      };
+    });
   };
-
-  // ===== 4) 메인 프롬프트: 탭( \t ) 포맷을 강제 + 연관성 규칙 강화 =====
-  const mainPrompt = `
-너는 ${mode === "movie" ? "영화" : "도서"} 추천 큐레이터다.
-
-[사용자 입력]
-- 장르/분위기: ${moodGenre || "(미입력)"}
-- 주제: ${theme || "(미입력)"}
-- ${watchedLabel}(선택): ${watched || "(미입력)"}
-- ${creatorLabel}(선택): ${creatorName || "(미입력)"}
-- 자유 조건: ${constraints || "(미입력)"}
-
-[연관성 규칙(중요)]
-- ${watchedLabel}가 입력되면, 추천은 반드시 그 작품과 "장르/분위기/정서/전개 템포"가 유사해야 한다. 무관한 추천 금지.
-- ${creatorLabel}가 입력되면, 가능하면 해당 ${creatorLabel}의 작품을 1개 이상 포함하거나 매우 유사한 결의 작품을 추천하라.
-- 자유 조건을 우선 반영하라(예: "잔인한 장면 X"면 폭력적 작품 추천 금지).
-
-[출력 규칙(엄격)]
-- 반드시 3줄만 출력
-- 다른 문장/설명/번호/기호/코드블록 금지
-- 각 줄은 아래 4개 컬럼을 "탭(\\t)"으로 구분해서 출력:
-제목<TAB>${creatorLabel}<TAB>연도(4자리 또는 빈칸)<TAB>추천이유(1문장)
-
-예시(탭 구분):
-기생충\t봉준호\t2019\t사회 풍자와 긴장감 있는 전개가 주제/분위기와 잘 맞습니다.
-`.trim();
-
-  // ===== 5) Self-repair 프롬프트 =====
-  const repairPrompt = (badText) => `
-아래 텍스트를 규칙에 맞게 다시 정리해라.
-
-[규칙(엄격)]
-- 반드시 3줄만 출력
-- 각 줄: 제목<TAB>${creatorLabel}<TAB>연도(4자리 또는 빈칸)<TAB>추천이유(1문장)
-- 다른 설명/번호/코드블록 금지
-
-[원문]
-${badText}
-`.trim();
 
   try {
     // 1차 시도
-    const text1 = await callGemini(mainPrompt, 0.5, 650);
-    let items = parseList(text1);
+    const text1 = await callGemini(0.6);
+    let titles = parseTitles(text1);
 
-    // 파싱이 약하면 “재포맷” 1회
-    if (items.length < 2) {
-      const text2 = await callGemini(repairPrompt(text1), 0.0, 450);
-      items = parseList(text2);
+    // 부족하면 2차(더 결정론)
+    if (titles.length < 3) {
+      const text2 = await callGemini(0.1);
+      const t2 = parseTitles(text2);
+      titles = [...titles, ...t2];
+      titles = [...new Set(titles.map((x) => x.trim()))].filter(Boolean).slice(0, 3);
     }
 
-    // 그래도 부족하면 fallback으로 채움
+    if (titles.length === 0) {
+      return new Response(JSON.stringify({ mode, items: fallbackItems(), note: "fallback" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      });
+    }
+
+    // items 구성(creator/year/reason은 비워도 프론트 렌더링은 됨)
+    const items = titles.slice(0, 3).map((title) => {
+      const q = [title, creatorName].filter(Boolean).join(" ").trim();
+      return {
+        title,
+        creator: "",
+        year: "",
+        reason: "입력하신 조건과 취향을 반영한 추천입니다.",
+        externalUrl: makeExternalUrl(q || title),
+        detailUrl: makeDetailUrl(q || title),
+      };
+    });
+
+    // 3개 미만이면 fallback으로 채움
     if (items.length < 3) {
       const fb = fallbackItems();
       const seen = new Set(items.map((x) => x.title.toLowerCase()));
@@ -259,15 +196,7 @@ ${badText}
       }
     }
 
-    // 최종 보정: 0이면 fallback
-    if (items.length === 0) {
-      return new Response(JSON.stringify({ mode, items: fallbackItems(), note: "fallback" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      });
-    }
-
-    return new Response(JSON.stringify({ mode, items: items.slice(0, 3) }), {
+    return new Response(JSON.stringify({ mode, items }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
