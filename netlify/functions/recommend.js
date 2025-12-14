@@ -1,8 +1,13 @@
 // netlify/functions/recommend.js
+// recommend.js 수정
 export default async (req) => {
   if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  // 1. process.env 지우고 따옴표 안에 실제 키를 직접 붙여넣어 보세요.
+  const apiKey = "AIzaSyDBKsFGoxlg8Tqkc56DuQLynlRLRam-FEQ"; 
+  
+  // const apiKey = process.env.GEMINI_API_KEY; <--- 기존 코드는 주석 처리
+
   if (!apiKey) {
     console.error("API Key missing");
     return new Response("Missing GEMINI_API_KEY", { status: 500 });
