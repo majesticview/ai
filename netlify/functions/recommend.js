@@ -27,43 +27,41 @@ export default async (req) => {
   const makeExternalUrl = (query) => {
     if (!query) return "";
     if (mode === "movie") {
-      // 유튜브 검색(예고편 키워드 포함)
       return `https://www.youtube.com/results?search_query=${encodeURIComponent(query + " 예고편")}`;
     }
-    // 온라인 서점 검색(예: 교보문고 검색 URL)
     return `https://search.kyobobook.co.kr/search?keyword=${encodeURIComponent(query)}`;
   };
 
   const makeDetailUrl = (query) => {
-    // “상세 정보”는 보통 위 검색 링크로도 충분하지만,
-    // 영화는 구글/위키/IMDb 등, 도서는 교보/알라딘 등으로 추가 링크를 줄 수 있음.
-    // 여기서는 간단히 구글 검색 링크를 하나 더 제공합니다.
     if (!query) return "";
     return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   };
 
-  // Gemini에 JSON 형식을 강제하기 위한 프롬프트
+  // JSON만 출력 강제 프롬프트
   const systemHint = `
 너는 콘텐츠 추천 엔진이다.
-반드시 아래 JSON 스키마만 출력한다. 다른 텍스트를 섞지 않는다.
+출력은 반드시 JSON 객체 1개만 한다.
+코드블록(\`\`\`) 사용 금지.
+설명/머리말/꼬리말 등 JSON 이외 텍스트 절대 금지.
+스키마를 반드시 지켜라.
 
+스키마:
 {
   "mode": "movie" | "book",
   "items": [
     {
       "title": string,
-      "creator": string,   // 영화면 감독 또는 주요 제작자, 도서면 저자
-      "year": string,      // 모르면 빈 문자열
-      "reason": string     // 2~4문장으로 추천 이유
+      "creator": string,
+      "year": string,
+      "reason": string
     }
   ]
 }
 
 규칙:
 - items는 2~3개
-- 최신/고전 적절히 섞기(가능하면)
-- 사용자가 언급한 취향/상황을 반영
-- 잘 모르는 정보는 추측하지 말고 빈 문자열로 둔다
+- 사용자의 취향/상황을 반영
+- 모르는 정보는 추측하지 말고 빈 문자열로 둔다
 `.trim();
 
   const userPrompt = `
@@ -75,24 +73,49 @@ export default async (req) => {
 위 정보를 반영해 2~3개 추천해줘.
 `.trim();
 
+  // Gemini 응답 텍스트에서 JSON만 최대한 안정적으로 추출
+  const extractJsonObject = (raw) => {
+    if (!raw) return null;
+
+    let cleaned = String(raw).trim();
+
+    // ```json ... ``` / ``` ... ``` 제거
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
+
+    const jsonText = cleaned.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(jsonText);
+    } catch {
+      return null;
+    }
+  };
+
   try {
-    // Gemini REST 호출 (Generative Language API)
-    // 모델명은 필요에 따라 변경 가능: gemini-1.5-flash, gemini-1.5-pro 등
-    const endpoint =
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    // 네 ListModels 결과에 존재하는 모델 사용
+    const model = "models/gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`;
 
     const geminiRes = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [
-          { role: "user", parts: [{ text: systemHint + "\n\n" + userPrompt }] }
+          {
+            role: "user",
+            parts: [{ text: systemHint + "\n\n" + userPrompt }],
+          },
         ],
         generationConfig: {
           temperature: 0.8,
-          maxOutputTokens: 700
-        }
-      })
+          maxOutputTokens: 700,
+          // JSON 출력 모드(가능한 경우 가장 효과적)
+          responseMimeType: "application/json",
+        },
+      }),
     });
 
     if (!geminiRes.ok) {
@@ -102,54 +125,52 @@ export default async (req) => {
 
     const geminiJson = await geminiRes.json();
 
-    // Gemini 응답 텍스트 추출
+    // Gemini 응답 텍스트 추출 (parts가 여러 개일 수 있음)
     const text =
-      geminiJson?.candidates?.[0]?.content?.parts?.map(p => p.text).join("")?.trim() ?? "";
+      geminiJson?.candidates?.[0]?.content?.parts
+        ?.map((p) => (typeof p?.text === "string" ? p.text : ""))
+        .join("")
+        .trim() ?? "";
 
-    // JSON만 나온다는 가정이지만, 안전하게 앞뒤 잡텍스트 제거 시도
-    const firstBrace = text.indexOf("{");
-    const lastBrace = text.lastIndexOf("}");
-    if (firstBrace === -1 || lastBrace === -1) {
+    const parsed = extractJsonObject(text);
+    if (!parsed) {
+      // 디버깅이 필요하면 아래를 임시로 켜서 raw 텍스트를 확인할 수 있음(배포 시에는 끄는 것 권장)
+      // return new Response(JSON.stringify({ error: "Model did not return JSON", raw: text }), { status: 502 });
       return new Response("Model did not return JSON", { status: 502 });
-    }
-
-    const jsonText = text.slice(firstBrace, lastBrace + 1);
-    let parsed;
-    try {
-      parsed = JSON.parse(jsonText);
-    } catch {
-      return new Response("Failed to parse model JSON", { status: 502 });
     }
 
     const items = Array.isArray(parsed.items) ? parsed.items.slice(0, 3) : [];
 
-    // 링크 붙이기(백엔드에서 파싱 후 확보)
-    const enriched = items.map((it) => {
-      const title = (it?.title ?? "").toString().trim();
-      const creator = (it?.creator ?? "").toString().trim();
-      const year = (it?.year ?? "").toString().trim();
-      const reason = (it?.reason ?? "").toString().trim();
+    const enriched = items
+      .map((it) => {
+        const title = (it?.title ?? "").toString().trim();
+        const creator = (it?.creator ?? "").toString().trim();
+        const year = (it?.year ?? "").toString().trim();
+        const reason = (it?.reason ?? "").toString().trim();
 
-      const q = [title, creator, year].filter(Boolean).join(" ");
-      return {
-        title,
-        creator,
-        year,
-        reason,
-        externalUrl: makeExternalUrl(title || q),
-        detailUrl: makeDetailUrl(q || title),
-      };
-    }).filter(x => x.title);
+        const q = [title, creator, year].filter(Boolean).join(" ").trim();
 
-    const responsePayload = {
-      mode,
-      items: enriched
-    };
+        return {
+          title,
+          creator,
+          year,
+          reason,
+          externalUrl: makeExternalUrl(title || q),
+          detailUrl: makeDetailUrl(q || title),
+        };
+      })
+      .filter((x) => x.title);
 
-    return new Response(JSON.stringify(responsePayload), {
-      status: 200,
-      headers: { "Content-Type": "application/json; charset=utf-8" }
-    });
+    return new Response(
+      JSON.stringify({
+        mode,
+        items: enriched,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }
+    );
   } catch (e) {
     return new Response(`Server exception: ${e.message}`, { status: 500 });
   }
