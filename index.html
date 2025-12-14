@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>콘텐츠 추천 (영화/도서)</title>
+  <title>AI 콘텐츠 추천 (영화/도서)</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -15,7 +15,7 @@
       </header>
 
       <section class="card">
-        <div class="mode">
+        <div class="mode" aria-label="추천 종류 선택">
           <button id="btnMovie" class="btn btn-primary" type="button">영화 추천 받으러 가기</button>
           <button id="btnBook" class="btn btn-secondary" type="button">도서 추천 받으러 가기</button>
         </div>
@@ -24,18 +24,28 @@
           <div class="pill" id="modePill">선택됨: -</div>
 
           <label class="field">
-            <span class="label">원하는 주제/분위기</span>
-            <input id="topic" type="text" placeholder="예: 힐링, 반전 있는 스릴러, 성장서사, 자기계발" />
+            <span class="label">1) 장르/분위기</span>
+            <input id="moodGenre" type="text" placeholder="예: 힐링, 다크, 코미디, 감성, 긴장감, 따뜻한" />
           </label>
 
           <label class="field">
-            <span class="label">이전에 재미있게 본 영화/도서</span>
-            <input id="history" type="text" placeholder="예: 인터스텔라, 해리포터, 데미안..." />
+            <span class="label">2) 주제</span>
+            <input id="theme" type="text" placeholder="예: 성장, 가족, 복수, 시간여행, 우정, 사회고발" />
           </label>
 
           <label class="field">
-            <span class="label">상황/조건 (선택)</span>
-            <textarea id="situation" rows="3" placeholder="예: 혼자 자기 전, 출퇴근 길, 가족과 같이, 2시간 이내..."></textarea>
+            <span class="label" id="watchedLabel">3) (선택) 이전에 봤던 영화</span>
+            <input id="watched" type="text" placeholder="예: 인터스텔라, 라라랜드, 올드보이" />
+          </label>
+
+          <label class="field" for="creatorName">
+            <span class="label" id="creatorLabel">4) (선택) 감독</span>
+            <input id="creatorName" type="text" placeholder="예: 크리스토퍼 놀란, 봉준호, 고레에다 히로카즈" />
+          </label>
+
+          <label class="field">
+            <span class="label">5) 자유 조건</span>
+            <textarea id="constraints" rows="3" placeholder="예: 2시간 이내, 잔인한 장면 X, 가족과 같이, 결말 해피엔딩 선호"></textarea>
           </label>
 
           <div class="actions">
