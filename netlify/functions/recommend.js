@@ -34,32 +34,11 @@ export default async (req) => {
     return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
   };
 
-  // 다른 팀처럼 "줄바꿈 리스트"만 받기 위한 프롬프트
   const creatorLabel = mode === "movie" ? "감독" : "저자";
   const watchedLabel = mode === "movie" ? "이전에 봤던 영화" : "이전에 읽었던 책";
 
-  const prompt = `
-너는 ${mode === "movie" ? "영화" : "도서"} 추천 큐레이터야.
-
-[사용자 입력]
-- 장르/분위기: ${moodGenre || "(미입력)"}
-- 주제: ${theme || "(미입력)"}
-- ${watchedLabel}(선택): ${watched || "(미입력)"}
-- ${creatorLabel}(선택): ${creatorName || "(미입력)"}
-- 자유 조건: ${constraints || "(미입력)"}
-
-규칙:
-- ${mode === "movie" ? "영화만" : "도서만"} 추천해.
-- 총 3개 추천해.
-- 출력 형식은 오직 아래 한 줄 형식만 사용해(설명/번호/머리말/코드블록 금지):
-제목 — ${creatorLabel}
-- ${creatorLabel}를 모르면 "제목 — " 처럼 비워도 됨.
-- 추천이 사용자의 입력과 연관되도록(특히 ${watchedLabel}, ${creatorLabel}) 최대한 반영해.
-
-이제 3줄로만 출력해.
-`.trim();
-
-  const callGemini = async () => {
+  // ===== 1) Gemini 호출 유틸 (프롬프트를 인자로 받게) =====
+  const callGemini = async (prompt, temperature = 0.4, maxOutputTokens = 700) => {
     const model = "models/gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`;
 
@@ -68,7 +47,7 @@ export default async (req) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.6, maxOutputTokens: 500 },
+        generationConfig: { temperature, maxOutputTokens },
       }),
     });
 
@@ -87,10 +66,11 @@ export default async (req) => {
     return text;
   };
 
+  // ===== 2) 입력 기반 fallback (연관성 유지) =====
   const fallbackItems = () => {
-    const seed = [watched, creatorName, moodGenre, theme].filter(Boolean).join(" ").trim();
+    const seed = [watched, creatorName, moodGenre, theme, constraints].filter(Boolean).join(" ").trim();
     const baseReason = seed
-      ? `입력("${seed}") 기반으로 연관 검색이 가능한 대체 추천입니다.`
+      ? `AI 응답이 불안정하여 입력("${seed}") 기반 검색용 대체 추천입니다.`
       : `입력 정보가 부족해 기본 추천입니다.`;
 
     const titles = seed
@@ -113,7 +93,7 @@ export default async (req) => {
     }));
   };
 
-  // 텍스트 파서(줄바꿈 3줄을 제목/creator로 분리)
+  // ===== 3) 관대한 파서: 탭 우선, 그 외 형식도 최대한 흡수 =====
   const parseList = (text) => {
     const cleaned = String(text || "")
       .replace(/^```[\s\S]*?\n/i, "")
@@ -124,55 +104,151 @@ export default async (req) => {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)
-      .slice(0, 10);
+      .slice(0, 20);
 
     const items = [];
-    for (const line0 of lines) {
+
+    for (const raw0 of lines) {
       if (items.length >= 3) break;
 
       // 번호/불릿 제거
-      const line = line0.replace(/^\s*(?:\d+[\.\)]\s*|[-•]\s*)/, "").trim();
-      if (!line) continue;
+      const raw = raw0.replace(/^\s*(?:\d+[\.\)]\s*|[-•]\s*)/, "").trim();
+      if (!raw) continue;
 
-      // "제목 — 감독" 형태 파싱(—, -, | 허용)
-      let title = line;
+      let title = "";
       let creator = "";
+      let year = "";
+      let reason = "";
 
-      const sepMatch = line.split("—");
-      if (sepMatch.length >= 2) {
-        title = sepMatch[0].trim();
-        creator = sepMatch.slice(1).join("—").trim();
-      } else if (line.includes(" - ")) {
-        const p = line.split(" - ");
-        title = p[0].trim();
-        creator = p.slice(1).join(" - ").trim();
-      } else if (line.includes("|")) {
-        const p = line.split("|");
-        title = p[0].trim();
-        creator = p.slice(1).join("|").trim();
+      // (1) 탭 포맷: 제목\t창작자\t연도\t이유
+      if (raw.includes("\t")) {
+        const cols = raw.split("\t").map((x) => x.trim());
+        title = (cols[0] ?? "").trim();
+        creator = (cols[1] ?? "").trim();
+        year = (cols[2] ?? "").trim();
+        reason = (cols[3] ?? "").trim();
+      } else {
+        // (2) 파이프 포맷: 제목 | creator= | year= | reason=
+        if (raw.includes("|")) {
+          const parts = raw.split("|").map((p) => p.trim()).filter(Boolean);
+          title = (parts[0] ?? "").trim();
+          for (let i = 1; i < parts.length; i++) {
+            const p = parts[i];
+            const lower = p.toLowerCase();
+            if (lower.startsWith("creator=")) creator = p.slice("creator=".length).trim();
+            else if (lower.startsWith("director=")) creator = p.slice("director=".length).trim();
+            else if (lower.startsWith("author=")) creator = p.slice("author=".length).trim();
+            else if (lower.startsWith("year=")) year = p.slice("year=".length).trim();
+            else if (lower.startsWith("reason=")) reason = p.slice("reason=".length).trim();
+          }
+        } else {
+          // (3) "제목 — 창작자" / "제목 - 창작자" / "제목: 창작자"
+          const sep =
+            raw.includes("—") ? "—" :
+            raw.includes(" - ") ? " - " :
+            raw.includes(":") ? ":" :
+            null;
+
+          if (sep) {
+            const p = raw.split(sep);
+            title = (p[0] ?? "").trim();
+            creator = p.slice(1).join(sep).trim();
+          } else {
+            title = raw.trim();
+          }
+
+          // (4) "제목 (감독: XXX)" / "제목 (저자: XXX)" 보정
+          const m = raw.match(/^(.*?)\s*\((?:감독|저자|작가|author|director)\s*:\s*(.*?)\)\s*$/i);
+          if (m) {
+            title = (m[1] ?? "").trim();
+            creator = (m[2] ?? "").trim();
+          }
+        }
       }
 
+      // year 정규화 (있으면 4자리만 인정)
+      if (year && !/^\d{4}$/.test(year)) year = "";
+
       if (!title) continue;
+      if (!reason) reason = "입력하신 조건과 취향을 반영한 추천입니다.";
 
       const q = [title, creator].filter(Boolean).join(" ").trim();
+
       items.push({
         title,
         creator,
-        year: "",
-        reason: "입력하신 조건과 취향을 반영한 추천입니다.",
+        year,
+        reason,
         externalUrl: makeExternalUrl(q || title),
-        detailUrl: makeDetailUrl(q || title),
+        detailUrl: makeDetailUrl([title, creator, year].filter(Boolean).join(" ")),
       });
     }
 
-    return items;
+    // 중복 제거
+    const seen = new Set();
+    const uniq = [];
+    for (const it of items) {
+      const key = (it.title || "").toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(it);
+      if (uniq.length >= 3) break;
+    }
+
+    return uniq;
   };
 
-  try {
-    const text = await callGemini();
-    let items = parseList(text);
+  // ===== 4) 메인 프롬프트: 탭( \t ) 포맷을 강제 + 연관성 규칙 강화 =====
+  const mainPrompt = `
+너는 ${mode === "movie" ? "영화" : "도서"} 추천 큐레이터다.
 
-    // 3개가 안 나오면 fallback으로 채움
+[사용자 입력]
+- 장르/분위기: ${moodGenre || "(미입력)"}
+- 주제: ${theme || "(미입력)"}
+- ${watchedLabel}(선택): ${watched || "(미입력)"}
+- ${creatorLabel}(선택): ${creatorName || "(미입력)"}
+- 자유 조건: ${constraints || "(미입력)"}
+
+[연관성 규칙(중요)]
+- ${watchedLabel}가 입력되면, 추천은 반드시 그 작품과 "장르/분위기/정서/전개 템포"가 유사해야 한다. 무관한 추천 금지.
+- ${creatorLabel}가 입력되면, 가능하면 해당 ${creatorLabel}의 작품을 1개 이상 포함하거나 매우 유사한 결의 작품을 추천하라.
+- 자유 조건을 우선 반영하라(예: "잔인한 장면 X"면 폭력적 작품 추천 금지).
+
+[출력 규칙(엄격)]
+- 반드시 3줄만 출력
+- 다른 문장/설명/번호/기호/코드블록 금지
+- 각 줄은 아래 4개 컬럼을 "탭(\\t)"으로 구분해서 출력:
+제목<TAB>${creatorLabel}<TAB>연도(4자리 또는 빈칸)<TAB>추천이유(1문장)
+
+예시(탭 구분):
+기생충\t봉준호\t2019\t사회 풍자와 긴장감 있는 전개가 주제/분위기와 잘 맞습니다.
+`.trim();
+
+  // ===== 5) Self-repair 프롬프트 =====
+  const repairPrompt = (badText) => `
+아래 텍스트를 규칙에 맞게 다시 정리해라.
+
+[규칙(엄격)]
+- 반드시 3줄만 출력
+- 각 줄: 제목<TAB>${creatorLabel}<TAB>연도(4자리 또는 빈칸)<TAB>추천이유(1문장)
+- 다른 설명/번호/코드블록 금지
+
+[원문]
+${badText}
+`.trim();
+
+  try {
+    // 1차 시도
+    const text1 = await callGemini(mainPrompt, 0.5, 650);
+    let items = parseList(text1);
+
+    // 파싱이 약하면 “재포맷” 1회
+    if (items.length < 2) {
+      const text2 = await callGemini(repairPrompt(text1), 0.0, 450);
+      items = parseList(text2);
+    }
+
+    // 그래도 부족하면 fallback으로 채움
     if (items.length < 3) {
       const fb = fallbackItems();
       const seen = new Set(items.map((x) => x.title.toLowerCase()));
@@ -183,7 +259,7 @@ export default async (req) => {
       }
     }
 
-    // 그래도 0이면 그냥 fallback
+    // 최종 보정: 0이면 fallback
     if (items.length === 0) {
       return new Response(JSON.stringify({ mode, items: fallbackItems(), note: "fallback" }), {
         status: 200,
@@ -195,8 +271,7 @@ export default async (req) => {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8" },
     });
-  } catch (e) {
-    // 에러여도 무조건 반환
+  } catch {
     return new Response(JSON.stringify({ mode, items: fallbackItems(), note: "fallback" }), {
       status: 200,
       headers: { "Content-Type": "application/json; charset=utf-8" },
